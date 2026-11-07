@@ -2,9 +2,10 @@
 
 本地 GPU 视频脱敏：人脸 / 车牌 / 敏感文字检测后高斯或马赛克打码；可选增强（N1–N4）。
 
-## 部署（GPU / AutoDL）
+## 文档
 
-完整步骤见：**[docs/GPU部署安装说明.md](docs/GPU部署安装说明.md)**（SSH、磁盘、预装 torch vs cu128 venv、权重、冒烟、FastAPI:6006、常见问题）。
+- 方案：[docs/技术方案.md](docs/技术方案.md)（人脸/车牌/OCR→打码，增强 N1–N4，FastAPI，无容器，按需加载，一卡一任务）
+- 部署：[docs/GPU部署安装说明.md](docs/GPU部署安装说明.md)（AutoDL / SeetaCloud：SSH、磁盘、预装 torch vs cu128 venv、权重、冒烟、FastAPI:6006）
 
 ## 状态（2026-11-07）
 
