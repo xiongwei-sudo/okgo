@@ -22,6 +22,12 @@ PLATE_CANDIDATES = [
     (
         "plate_yolov8n.pt",
         [
+            # 已验证可下（2026-11-07）：Koushim YOLOv8 plate via hf-mirror
+            "https://hf-mirror.com/Koushim/yolov8-license-plate-detection/resolve/main/best.pt",
+            "https://huggingface.co/Koushim/yolov8-license-plate-detection/resolve/main/best.pt",
+            "https://hf-mirror.com/AZIIIIIIIIZ/License-plate-detection/resolve/main/best.pt",
+            "https://raw.githubusercontent.com/Muhammad-Zeerak-Khan/Automatic-License-Plate-Recognition-using-YOLOv8/main/license_plate_detector.pt",
+            "https://ghfast.top/https://raw.githubusercontent.com/Muhammad-Zeerak-Khan/Automatic-License-Plate-Recognition-using-YOLOv8/main/license_plate_detector.pt",
             # keremberke YOLOv8n license-plate（HF + 镜像 + 常见文件名）
             "https://huggingface.co/keremberke/yolov8n-license-plate/resolve/main/best.pt",
             "https://hf-mirror.com/keremberke/yolov8n-license-plate/resolve/main/best.pt",
@@ -124,8 +130,14 @@ def main() -> int:
     enh = WEIGHTS / "enhance"
     enh.mkdir(exist_ok=True)
     (enh / "README.txt").write_text(
-        "N1 Real-ESRGAN / N2 NAFNet·Zero-DCE++ / N3 vidstab / N4 BasicVSR++ 权重【待补】\n"
-        "缺权重时 pipeline/enhance.py 使用 OpenCV 降级。\n",
+        "增强权重状态（2026-11-07）\n"
+        "\n"
+        "- RealESRGAN_x4plus.pth、zero_dce.pth：可由下载脚本获取，GPU 上已在使用。\n"
+        "  二进制不进本仓库，以后走 Git LFS。\n"
+        "- NAFNet-SIDD、BasicVSR++：仍【待补】。OpenCV 降级保持生效。\n"
+        "- vidstab：没有大权重文件。稳像使用 OpenCV 光流。\n"
+        "\n"
+        "缺专用权重或推理未接入时，pipeline/enhance.py 记录【待补】并走 OpenCV 降级。\n",
         encoding="utf-8",
     )
     print("Done. weights dir:", WEIGHTS)
