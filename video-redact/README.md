@@ -7,12 +7,13 @@
 | 文档 | 说明 |
 |------|------|
 | [docs/技术方案.md](docs/技术方案.md) | 总体方案：范围、架构、检测／打码／跟踪、GPU 调度、增强 N1–N4、分期 M1–M5、NFR |
+| [docs/设计方案思路.md](docs/设计方案思路.md) | 已定决策：无容器、按需加载、一卡一任务、先增强后打码、模型清单、AutoDL 5090D、分期与未完成项 |
 | [docs/GPU部署安装说明.md](docs/GPU部署安装说明.md) | 云 GPU 部署：SSH、磁盘、预装 torch vs cu128 venv、权重、冒烟、FastAPI:6006、常见问题 |
 | [docs/README.md](docs/README.md) | 文档索引 |
 
 ## 部署（GPU / AutoDL）
 
-完整步骤见：**[docs/GPU部署安装说明.md](docs/GPU部署安装说明.md)**。技术方案见 **[docs/技术方案.md](docs/技术方案.md)**。
+完整步骤见：**[docs/GPU部署安装说明.md](docs/GPU部署安装说明.md)**。技术方案见 **[docs/技术方案.md](docs/技术方案.md)**。已定决策见 **[docs/设计方案思路.md](docs/设计方案思路.md)**。
 
 ## 状态（2026-11-07）
 
