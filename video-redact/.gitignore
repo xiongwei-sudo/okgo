@@ -8,10 +8,14 @@ dist/
 build/
 .pytest_cache/
 .mypy_cache/
-# 权重默认不入库。若以后强制添加，走 .gitattributes 里的 Git LFS。
+# weights: ignore by default, then allow LFS payloads + markers
 weights/**
 !weights/.gitkeep
-!weights/PLATE_WEIGHTS_PENDING.txt
+!weights/**/
+!weights/**/*.pt
+!weights/**/*.onnx
+!weights/**/*.txt
+!weights/**/README.txt
 models/**
 !models/.gitkeep
 samples/**
@@ -22,8 +26,9 @@ outputs/
 *.mp4
 *.avi
 *.mkv
-.env
-*.pt
-*.onnx
+# ignore weights outside weights/ (local experiments)
+/*.pt
+/*.onnx
 *.engine
+.env
 .DS_Store

@@ -13,4 +13,3 @@ pydantic>=2.0.0
 aiofiles>=24.1.0
 tqdm>=4.66.0
 PyYAML>=6.0.0
-# 可选，未安装时增强自动走 OpenCV 并记录【待补】：vidstab、realesrgan、basicsr
