@@ -1,0 +1,34 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+# weights: ignore by default, then allow LFS payloads + markers
+weights/**
+!weights/.gitkeep
+!weights/**/
+!weights/**/*.pt
+!weights/**/*.onnx
+!weights/**/*.txt
+!weights/**/README.txt
+models/**
+!models/.gitkeep
+samples/**
+!samples/.gitkeep
+jobs/**
+!jobs/.gitkeep
+outputs/
+*.mp4
+*.avi
+*.mkv
+# ignore weights outside weights/ (local experiments)
+/*.pt
+/*.onnx
+*.engine
+.env
+.DS_Store

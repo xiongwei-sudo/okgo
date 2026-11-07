@@ -1,0 +1,5 @@
+# Git LFS：权重进库（由云端 PR / 本机 git lfs track 配合）
+weights/**/*.pt filter=lfs diff=lfs merge=lfs -text
+weights/**/*.onnx filter=lfs diff=lfs merge=lfs -text
+weights/*.pt filter=lfs diff=lfs merge=lfs -text
+weights/*.onnx filter=lfs diff=lfs merge=lfs -text
