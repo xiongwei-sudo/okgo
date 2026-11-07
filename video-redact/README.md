@@ -4,8 +4,15 @@
 
 ## 文档
 
-- 方案：[docs/技术方案.md](docs/技术方案.md)（人脸/车牌/OCR→打码，增强 N1–N4，FastAPI，无容器，按需加载，一卡一任务）
-- 部署：[docs/GPU部署安装说明.md](docs/GPU部署安装说明.md)（AutoDL / SeetaCloud：SSH、磁盘、预装 torch vs cu128 venv、权重、冒烟、FastAPI:6006）
+| 文档 | 说明 |
+|------|------|
+| [docs/技术方案.md](docs/技术方案.md) | 总体方案：范围、架构、检测／打码／跟踪、GPU 调度、增强 N1–N4、分期 M1–M5、NFR |
+| [docs/GPU部署安装说明.md](docs/GPU部署安装说明.md) | 云 GPU 部署：SSH、磁盘、预装 torch vs cu128 venv、权重、冒烟、FastAPI:6006、常见问题 |
+| [docs/README.md](docs/README.md) | 文档索引 |
+
+## 部署（GPU / AutoDL）
+
+完整步骤见：**[docs/GPU部署安装说明.md](docs/GPU部署安装说明.md)**。技术方案见 **[docs/技术方案.md](docs/技术方案.md)**。
 
 ## 状态（2026-11-07）
 
