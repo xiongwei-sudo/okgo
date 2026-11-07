@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 import re
 import shutil
 import tempfile
@@ -15,11 +16,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pipeline.config import JOBS_DIR, WEIGHTS_DIR
 from pipeline.enhance import EnhanceOptions
 from pipeline.pipeline import RedactOptions, run_redact
-from pipeline.queue import GPUJobQueue, JobCancelled, JobStatus
+from pipeline.queue import AdmitDecision, GPUJobQueue, JobCancelled, JobStatus
 
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="视频打码工具", version="0.1.4")
+app = FastAPI(title="视频打码工具", version="0.1.5")
 queue = GPUJobQueue(max_workers=1)
 
 _SAFE_EXT = re.compile(r"^[a-z0-9]{1,8}$", re.I)
@@ -35,6 +36,7 @@ legend{padding:0 .4rem;font-weight:600}
 .bar{height:10px;background:#eee;border-radius:6px;overflow:hidden;margin:.5rem 0}
 .bar>i{display:block;height:100%;width:0;background:#2b7cff;transition:width .2s}
 #status{font-weight:600}
+#worker{font-size:.9rem;color:#333;margin:.25rem 0}
 #log{background:#f6f8fa;padding:.75rem;border-radius:8px;white-space:pre-wrap;word-break:break-all;font-size:12px}
 a#dl{display:none;margin-top:.5rem}
 .ctrl{display:flex;flex-wrap:wrap;gap:.5rem;margin:.75rem 0}
@@ -45,7 +47,8 @@ a#dl{display:none;margin-top:.5rem}
 </style>
 </head><body>
 <h1>视频打码工具</h1>
-<p class="hint">暂停／取消在<strong>下一帧安全点</strong>生效（当前帧检测结束后）；取消后会卸载模型并释放 GPU。</p>
+<p class="hint">暂停／取消在<strong>下一帧安全点</strong>生效（当前帧检测结束后）；取消后会卸载模型并释放 GPU。提交增强前会检查 worker 存活与 GPU 空闲。</p>
+<p id="worker">worker: …</p>
 <form id="f">
 <label>视频 <input type="file" name="file" accept="video/*" required/></label>
 <fieldset><legend>打码目标</legend>
@@ -86,6 +89,7 @@ const log=document.getElementById('log');
 const dl=document.getElementById('dl');
 const statusEl=document.getElementById('status');
 const prog=document.getElementById('prog');
+const workerEl=document.getElementById('worker');
 const btnPause=document.getElementById('btnPause');
 const btnResume=document.getElementById('btnResume');
 const btnCancel=document.getElementById('btnCancel');
@@ -93,6 +97,27 @@ const btnRestart=document.getElementById('btnRestart');
 const BOOLS=['face','plate','text','enhance','stabilize','lowlight','denoise','deblur','superres'];
 let currentId=null;
 let polling=false;
+
+async function refreshWorker(){
+  try{
+    const w=await (await fetch('/api/worker')).json();
+    const g=w.gpu||{};
+    const gpuBits=[g.available?('GPU '+(g.name||'ok')):'无GPU', g.idle?'空闲':'忙碌'];
+    if(g.memory_used_mb!=null && g.memory_total_mb!=null){
+      gpuBits.push(Math.round(g.memory_used_mb)+'/'+Math.round(g.memory_total_mb)+'MB');
+    }
+    workerEl.textContent='worker: '+(w.liveness||'?')
+      +' · slot '+(w.slot_free?'free':'busy')
+      +' · active '+(w.active_jobs||0)+' queued '+(w.queued_jobs||0)
+      +' · '+gpuBits.join(' · ')
+      +(w.current_job_id?(' · job '+w.current_job_id):'');
+    workerEl.style.color=(w.liveness==='hung'||w.liveness==='dead')?'#c44':'#333';
+  }catch(err){
+    workerEl.textContent='worker: 状态获取失败 '+err;
+  }
+}
+refreshWorker();
+setInterval(refreshWorker, 2500);
 
 function setProgress(p, label){
   const pct=Math.max(0,Math.min(100, Math.round((p||0)*100)));
@@ -149,8 +174,10 @@ const poll=async()=>{
       return;
     }
     if(s.status==='failed'||s.status==='cancelled'){
-      setProgress(s.progress||0, s.status==='cancelled'?'已取消':'失败');
+      const why=s.fail_reason||s.error||s.message||'';
+      setProgress(s.progress||0, s.status==='cancelled'?'已取消':('失败'+(why?(' · '+why):'')));
       polling=false;
+      refreshWorker();
       return;
     }
     // paused / queued / running 继续轮询，以便按钮状态与进度刷新
@@ -181,10 +208,18 @@ document.getElementById('f').onsubmit=async(e)=>{
     log.textContent=String(err);
     return;
   }
-  if(!r.ok){setProgress(0,'创建失败');log.textContent=JSON.stringify(j,null,2);return;}
+  if(!r.ok){
+    const why=(j && (j.fail_reason||j.message||j.error)) || ('HTTP '+r.status);
+    setProgress(0,'无法启动 · '+why);
+    log.textContent=JSON.stringify(j,null,2);
+    refreshWorker();
+    return;
+  }
   currentId=j.job_id;
-  setProgress(0,'已入队 '+currentId);
-  updateButtons({status:'queued'});
+  const admit=j.admit||'queued';
+  setProgress(0, (admit==='run'?'立即开跑 ':'已入队 ')+currentId+(j.admit_reason?(' · '+j.admit_reason):''));
+  updateButtons({status:j.status||'queued'});
+  refreshWorker();
   poll();
 };
 </script></body></html>
@@ -250,6 +285,7 @@ def _status_payload(st) -> dict:
     msg = st.message or ""
     if st.status == JobStatus.failed and st.error:
         msg = st.error
+    snap = queue.worker_snapshot()
     return {
         "job_id": st.job_id,
         "status": st.status.value,
@@ -258,6 +294,27 @@ def _status_payload(st) -> dict:
         "progress_pct": pct,
         "message": msg,
         "error": st.error,
+        "fail_reason": getattr(st, "fail_reason", None) or (st.error if st.status == JobStatus.failed else None),
+        "admit": getattr(st, "admit", None),
+        "admit_reason": getattr(st, "admit_reason", None),
+        "wants_enhance": bool(getattr(st, "wants_enhance", False)),
+        "process": {
+            "heartbeat_age_s": (
+                round(time.time() - st.heartbeat_at, 2) if getattr(st, "heartbeat_at", None) else None
+            ),
+            "worker_tid": getattr(st, "worker_tid", None),
+            "started_at": getattr(st, "started_at", None),
+            "future_alive": bool(
+                st.job_id in getattr(queue, "_futures", {})
+                and not queue._futures[st.job_id].done()
+            ) if st.job_id in getattr(queue, "_futures", {}) else False,
+        },
+        "worker": {
+            "liveness": snap.get("liveness"),
+            "slot_free": snap.get("slot_free"),
+            "current_job_id": snap.get("current_job_id"),
+            "queued_jobs": snap.get("queued_jobs"),
+        },
         "has_output": bool(st.output and Path(st.output).exists()),
         "controls": {
             "can_cancel": st.status in (JobStatus.queued, JobStatus.running, JobStatus.paused),
@@ -306,10 +363,20 @@ def _parse_options_from_form(
     }
 
 
-def _submit_redact_job(jid: str, jdir: Path, inp: Path, opt: Dict[str, Any]) -> None:
+def _submit_redact_job(
+    jid: str,
+    jdir: Path,
+    inp: Path,
+    opt: Dict[str, Any],
+    *,
+    admit: AdmitDecision,
+    admit_reason: str,
+) -> None:
     out = jdir / "output.mp4"
+    wants_enhance = bool(opt.get("enhance"))
 
     def _run(state) -> None:
+        queue.heartbeat(state)
         state.message = "准备流水线"
         state.progress = 0.01
         enh = EnhanceOptions(
@@ -332,6 +399,7 @@ def _submit_redact_job(jid: str, jdir: Path, inp: Path, opt: Dict[str, Any]) -> 
         def prog(p: float, msg: str) -> None:
             if state.cancel_flag.is_set():
                 raise JobCancelled("cancelled")
+            queue.heartbeat(state)
             # 保持 paused 展示
             if state.status != JobStatus.paused:
                 state.progress = max(0.01, min(0.99, float(p)))
@@ -345,11 +413,18 @@ def _submit_redact_job(jid: str, jdir: Path, inp: Path, opt: Dict[str, Any]) -> 
         result = run_redact(
             inp, out, WEIGHTS_DIR, opts, progress=prog, control=control
         )
+        queue.heartbeat(state)
         state.output = result.output
         note = "; ".join(result.notes) if result.notes else "处理完成"
         state.message = f"{note} · frames={result.frames} det={result.detections_total}"
 
-    queue.submit(_run, job_id=jid)
+    queue.submit(
+        _run,
+        job_id=jid,
+        wants_enhance=wants_enhance,
+        admit=admit,
+        admit_reason=admit_reason,
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -397,15 +472,44 @@ async def create_job(
     opt = _parse_options_from_form(
         face, plate, text, mode, enhance, stabilize, lowlight, denoise, deblur, superres, scale
     )
+    # 调度判断：worker 存活 / GPU 空闲 / 槽位 → run|queue|reject
+    queue.reconcile()
+    decision, reason = queue.admit(wants_enhance=bool(opt["enhance"]))
+    if decision == AdmitDecision.reject:
+        # 清理已上传文件，避免垃圾任务目录堆积
+        try:
+            shutil.rmtree(jdir, ignore_errors=True)
+        except Exception:
+            pass
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "cannot_start",
+                "fail_reason": reason,
+                "message": reason,
+                "admit": decision.value,
+                "admit_reason": reason,
+                "enhance": opt["enhance"],
+                "worker": queue.worker_snapshot(),
+            },
+            status_code=503,
+        )
     _save_options(jdir, opt, final_inp.name)
-    _submit_redact_job(jid, jdir, final_inp, opt)
+    _submit_redact_job(
+        jid, jdir, final_inp, opt, admit=decision, admit_reason=reason
+    )
+    stage = "处理中" if decision == AdmitDecision.run else "排队中"
     return {
+        "ok": True,
         "job_id": jid,
-        "status": "queued",
-        "stage": "排队中",
-        "message": "已创建，等待 GPU 任务",
+        "status": "queued" if decision == AdmitDecision.queue else "queued",
+        "stage": stage,
+        "message": reason,
+        "admit": decision.value,
+        "admit_reason": reason,
         "input": final_inp.name,
         "enhance": opt["enhance"],
+        "worker": queue.worker_snapshot(),
     }
 
 
@@ -420,6 +524,7 @@ def job_status(job_id: str):
 @app.post("/api/jobs/{job_id}/cancel")
 def job_cancel(job_id: str):
     ok, reason = queue.cancel(job_id)
+    queue.reconcile()
     st = queue.get(job_id)
     if not st:
         return JSONResponse({"error": "not found", "job_id": job_id}, status_code=404)
@@ -432,6 +537,7 @@ def job_cancel(job_id: str):
 @app.post("/api/jobs/{job_id}/pause")
 def job_pause(job_id: str):
     ok, reason = queue.pause(job_id)
+    queue.reconcile()
     st = queue.get(job_id)
     if not st:
         return JSONResponse({"error": "not found", "job_id": job_id}, status_code=404)
@@ -445,6 +551,7 @@ def job_pause(job_id: str):
 @app.post("/api/jobs/{job_id}/resume")
 def job_resume(job_id: str):
     ok, reason = queue.resume(job_id)
+    queue.reconcile()
     st = queue.get(job_id)
     if not st:
         return JSONResponse({"error": "not found", "job_id": job_id}, status_code=404)
@@ -474,23 +581,57 @@ def job_restart(job_id: str):
             status_code=409,
         )
 
+    opt_clean = {k: v for k, v in opt.items() if k != "input_name"}
+    queue.reconcile()
+    decision, reason = queue.admit(wants_enhance=bool(opt_clean.get("enhance")))
+    if decision == AdmitDecision.reject:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "cannot_start",
+                "fail_reason": reason,
+                "message": reason,
+                "admit": decision.value,
+                "admit_reason": reason,
+                "source_job_id": job_id,
+                "worker": queue.worker_snapshot(),
+            },
+            status_code=503,
+        )
+
     new_id = uuid.uuid4().hex[:12]
     jdir = JOBS_DIR / new_id
     jdir.mkdir(parents=True, exist_ok=True)
     new_inp = jdir / inp.name
     shutil.copy2(inp, new_inp)
-    # 去掉内部字段再存
-    opt_clean = {k: v for k, v in opt.items() if k != "input_name"}
     _save_options(jdir, opt_clean, new_inp.name)
-    _submit_redact_job(new_id, jdir, new_inp, opt_clean)
+    _submit_redact_job(
+        new_id, jdir, new_inp, opt_clean, admit=decision, admit_reason=reason
+    )
     return {
+        "ok": True,
         "job_id": new_id,
         "status": "queued",
-        "stage": "排队中",
-        "message": f"已从 {job_id} 重启",
+        "stage": "处理中" if decision == AdmitDecision.run else "排队中",
+        "message": f"已从 {job_id} 重启 · {reason}",
+        "admit": decision.value,
+        "admit_reason": reason,
         "source_job_id": job_id,
         "input": new_inp.name,
+        "worker": queue.worker_snapshot(),
     }
+
+
+@app.get("/api/worker")
+def worker_status():
+    """worker/进程存活与 GPU 空闲快照，供 UI 与调度判断。"""
+    return queue.worker_snapshot()
+
+
+@app.post("/api/scheduler/reconcile")
+def scheduler_reconcile():
+    """手动触发调度对账：清理 hung/dead，暴露卡住的 queued。"""
+    return queue.reconcile()
 
 
 @app.get("/api/jobs/{job_id}/download")
