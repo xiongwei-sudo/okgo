@@ -8,8 +8,10 @@ dist/
 build/
 .pytest_cache/
 .mypy_cache/
+# 权重默认不入库。若以后强制添加，走 .gitattributes 里的 Git LFS。
 weights/**
 !weights/.gitkeep
+!weights/PLATE_WEIGHTS_PENDING.txt
 models/**
 !models/.gitkeep
 samples/**

@@ -27,10 +27,11 @@ def main(argv=None) -> int:
     p.add_argument("--stride", type=int, default=1)
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--cpu", action="store_true", help="强制 CPU")
-    p.add_argument("--enhance", action="store_true", help="启用增强 stub（N1–N4 待补）")
+    p.add_argument("--enhance", action="store_true", help="启用增强；官方权重缺失时走 OpenCV 降级并记录【待补】")
     p.add_argument("--superres", action="store_true")
     p.add_argument("--lowlight", action="store_true")
     p.add_argument("--denoise", action="store_true")
+    p.add_argument("--deblur", action="store_true")
     p.add_argument("--stabilize", action="store_true")
     p.add_argument("--scale", type=int, default=2, choices=[2, 4])
     p.add_argument("-v", "--verbose", action="store_true")
@@ -43,10 +44,16 @@ def main(argv=None) -> int:
 
     device = "cpu" if args.cpu else args.device
     enhance = EnhanceOptions(
-        enable=args.enhance or args.superres or args.lowlight or args.denoise or args.stabilize,
+        enable=args.enhance
+        or args.superres
+        or args.lowlight
+        or args.denoise
+        or args.deblur
+        or args.stabilize,
         stabilize=args.stabilize,
         lowlight=args.lowlight,
         denoise=args.denoise,
+        deblur=args.deblur,
         superres=args.superres,
         scale=args.scale,
     )

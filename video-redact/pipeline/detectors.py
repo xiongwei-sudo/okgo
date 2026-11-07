@@ -120,7 +120,11 @@ class FaceDetector(BaseDetector):
 
 
 class PlateDetector(BaseDetector):
-    """YOLOv8 车牌；无权重时启发式颜色轮廓降级。"""
+    """YOLOv8 车牌。
+
+    权重（任一即可）：plate_yolov8n.pt、yolov8n-plate.pt、license_plate_yolov8n.pt。
+    缺失时见 weights/PLATE_WEIGHTS_PENDING.txt，并保持颜色/轮廓启发式。
+    """
 
     name = "plate"
 
@@ -160,7 +164,10 @@ class PlateDetector(BaseDetector):
             logger.info("PlateDetector loaded: YOLO %s", w)
         else:
             self._backend = "heuristic"
-            logger.warning("车牌权重【待补】，使用颜色/轮廓启发式降级")
+            logger.warning(
+                "车牌权重【待补】（说明：%s），使用颜色/轮廓启发式降级",
+                self.weights_dir / "PLATE_WEIGHTS_PENDING.txt",
+            )
 
     def unload(self) -> None:
         self._model = None
