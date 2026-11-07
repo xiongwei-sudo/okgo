@@ -1,4 +1,4 @@
-"""进程内任务队列：一卡一任务（concurrency=1），支持取消 / 暂停 / 继续。
+"""进程内任务队列：默认同卡串行，可选有限并行（显存门禁），支持取消 / 暂停 / 继续。
 
 调度判断机制（scheduling guards）：
 - 提交前根据 worker 存活、心跳、占用与 GPU 空闲决定 run / queue / reject
@@ -70,6 +70,7 @@ class JobState:
     admit_reason: str = ""
     wants_enhance: bool = False
     fail_reason: Optional[str] = None
+    enhance_paths: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.pause_gate.is_set():
@@ -182,12 +183,20 @@ class GPUJobQueue:
         max_workers: int = 1,
         hung_seconds: float = 90.0,
         require_gpu_for_enhance: bool = False,
+        min_free_vram_mb_per_job: float = 6000.0,
     ):
-        if max_workers != 1:
-            logger.warning("强制 concurrency=1/GPU，忽略 max_workers=%s", max_workers)
+        # 默认同卡串行；可通过 max_workers>1 开启有限并行（显存门禁）
+        self._max_workers = max(1, min(int(max_workers), 2))  # 硬顶 2，防 OOM
+        if self._max_workers > 1:
+            logger.warning(
+                "GPU concurrency=%s（显存门禁 %.0fMB/任务）；请监控 nvidia-smi",
+                self._max_workers,
+                min_free_vram_mb_per_job,
+            )
         self._hung_seconds = float(hung_seconds)
         self._require_gpu_for_enhance = bool(require_gpu_for_enhance)
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-job")
+        self._min_free_vram_mb_per_job = float(min_free_vram_mb_per_job)
+        self._pool = ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="gpu-job")
         self._pool_gen = 0
         self._jobs: Dict[str, JobState] = {}
         self._futures: Dict[str, Future] = {}
@@ -299,8 +308,8 @@ class GPUJobQueue:
                 "worker_tid": self._worker_tid,
                 "worker_heartbeat_age_s": round(time.time() - self._worker_heartbeat, 2),
                 "hung_threshold_s": self._hung_seconds,
-                "concurrency": 1,
-                "slot_free": live == WorkerLiveness.idle and len(self._running_or_paused()) == 0,
+                "concurrency": self._max_workers,
+                "slot_free": len(self._running_or_paused()) < self._max_workers,
                 "current_job_id": cur,
                 "current_status": cur_st.status.value if cur_st else None,
                 "active_jobs": len(active),
@@ -360,9 +369,32 @@ class GPUJobQueue:
             if force_queue:
                 return AdmitDecision.queue, "强制排队"
 
-            if live == WorkerLiveness.busy or self._running_or_paused():
+            running = self._running_or_paused()
+            if running:
+                if len(running) < self._max_workers:
+                    # 并行槽：检查剩余显存
+                    free_mb = None
+                    try:
+                        used = gpu.get("memory_used_mb")
+                        total = gpu.get("memory_total_mb")
+                        if used is not None and total is not None:
+                            free_mb = float(total) - float(used)
+                    except Exception:
+                        free_mb = None
+                    need = self._min_free_vram_mb_per_job
+                    if free_mb is not None and free_mb < need:
+                        holders = [f"{s.job_id}:{s.status.value}" for s in running]
+                        return (
+                            AdmitDecision.queue,
+                            f"并行槽可用但显存不足（free≈{free_mb:.0f}MB < {need:.0f}MB），排队（{', '.join(holders)}）",
+                        )
+                    # 允许第二任务 run
+                    return (
+                        AdmitDecision.run,
+                        f"并行开跑（{len(running)+1}/{self._max_workers}），剩余显存≈{free_mb if free_mb is not None else '?'}MB",
+                    )
                 holders = [
-                    f"{s.job_id}:{s.status.value}" for s in self._running_or_paused()
+                    f"{s.job_id}:{s.status.value}" for s in running
                 ]
                 return (
                     AdmitDecision.queue,
@@ -471,7 +503,7 @@ class GPUJobQueue:
             self._pool.shutdown(wait=False)
         except Exception:
             logger.exception("pool shutdown failed")
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-job")
+        self._pool = ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="gpu-job")
         self._pool_gen += 1
         self._current_job_id = None
         self._worker_tid = None

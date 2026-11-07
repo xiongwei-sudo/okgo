@@ -1,3 +1,9 @@
+## 版本 0.1.6
+
+- enhance-only：关闭全部打码目标时跳过人脸/车牌/OCR
+- Real-ESRGAN / Zero-DCE 官方权重 GPU 加载；UI 显示 official_gpu vs OpenCV 降级
+- 队列可选 concurrency≤2（显存门禁）
+
 # 视频打码工具（video-redact）
 
 本地 GPU 视频脱敏：人脸 / 车牌 / 敏感文字检测后高斯或马赛克打码；可选增强（N1–N4）。

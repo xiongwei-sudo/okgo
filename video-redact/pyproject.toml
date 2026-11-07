@@ -1,5 +1,5 @@
 [project]
 name = "video-redact"
-version = "0.1.0"
+version = "0.1.6"
 description = "本地视频打码 + 增强流水线（人脸/车牌/OCR，按需加载）"
 requires-python = ">=3.10"

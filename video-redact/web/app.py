@@ -20,15 +20,15 @@ from pipeline.queue import AdmitDecision, GPUJobQueue, JobCancelled, JobStatus
 
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="视频打码工具", version="0.1.5")
-queue = GPUJobQueue(max_workers=1)
+app = FastAPI(title="视频打码工具", version="0.1.6")
+queue = GPUJobQueue(max_workers=2, min_free_vram_mb_per_job=8000.0)
 
 _SAFE_EXT = re.compile(r"^[a-z0-9]{1,8}$", re.I)
 
 INDEX_HTML = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"/><title>视频打码</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;line-height:1.45}
+body{font-family:system-ui,sans-serif;max-width:760px;margin:2rem auto;padding:0 1rem;line-height:1.45}
 label{display:block;margin:.45rem 0}
 fieldset{border:1px solid #ccc;border-radius:8px;margin:1rem 0;padding:.75rem 1rem}
 legend{padding:0 .4rem;font-weight:600}
@@ -36,7 +36,7 @@ legend{padding:0 .4rem;font-weight:600}
 .bar{height:10px;background:#eee;border-radius:6px;overflow:hidden;margin:.5rem 0}
 .bar>i{display:block;height:100%;width:0;background:#2b7cff;transition:width .2s}
 #status{font-weight:600}
-#worker{font-size:.9rem;color:#333;margin:.25rem 0}
+#worker,#paths{font-size:.9rem;color:#333;margin:.25rem 0}
 #log{background:#f6f8fa;padding:.75rem;border-radius:8px;white-space:pre-wrap;word-break:break-all;font-size:12px}
 a#dl{display:none;margin-top:.5rem}
 .ctrl{display:flex;flex-wrap:wrap;gap:.5rem;margin:.75rem 0}
@@ -44,29 +44,33 @@ a#dl{display:none;margin-top:.5rem}
 .ctrl button:disabled{opacity:.45;cursor:not-allowed}
 .ctrl button.danger{border-color:#c44;color:#c44}
 .hint{color:#666;font-size:.9rem;margin:.25rem 0 1rem}
+.tag{display:inline-block;padding:.1rem .45rem;border-radius:4px;background:#eef;margin:.1rem .2rem 0 0;font-size:.8rem}
+.tag.warn{background:#ffe9c6}
+.tag.ok{background:#d9f5d9}
 </style>
 </head><body>
-<h1>视频打码工具</h1>
-<p class="hint">暂停／取消在<strong>下一帧安全点</strong>生效（当前帧检测结束后）；取消后会卸载模型并释放 GPU。提交增强前会检查 worker 存活与 GPU 空闲。</p>
+<h1>视频打码 / 增强 <small style="font-weight:400;color:#888">v0.1.6</small></h1>
+<p class="hint">只开增强、关掉全部打码目标 → <strong>不会</strong>做人脸/车牌/OCR 马赛克。增强路径（官方 GPU / OpenCV 降级）会显示在下方与任务日志。</p>
 <p id="worker">worker: …</p>
+<p id="paths">enhance_path: （提交后可见）</p>
 <form id="f">
 <label>视频 <input type="file" name="file" accept="video/*" required/></label>
-<fieldset><legend>打码目标</legend>
-<label><input type="checkbox" name="face" checked/> 人脸</label>
-<label><input type="checkbox" name="plate" checked/> 车牌</label>
-<label><input type="checkbox" name="text" checked/> 敏感文字</label>
+<fieldset><legend>打码目标（可全关 = 仅增强）</legend>
+<label><input type="checkbox" name="face" id="face"/> 人脸</label>
+<label><input type="checkbox" name="plate" id="plate"/> 车牌</label>
+<label><input type="checkbox" name="text" id="text"/> 敏感文字</label>
 <label>模式
 <select name="mode"><option value="gaussian">高斯</option><option value="mosaic">马赛克</option><option value="solid">遮罩</option></select>
 </label>
 </fieldset>
-<fieldset><legend>增强（缺权重时 OpenCV 降级）</legend>
-<label><input type="checkbox" name="enhance"/> 启用增强</label>
+<fieldset><legend>增强</legend>
+<label><input type="checkbox" name="enhance" id="enhance"/> 启用增强</label>
 <div class="row">
-<label><input type="checkbox" name="stabilize"/> 稳像 N3</label>
-<label><input type="checkbox" name="lowlight"/> 低光 N2</label>
-<label><input type="checkbox" name="denoise"/> 去噪 N2</label>
-<label><input type="checkbox" name="deblur"/> 去糊 N2</label>
-<label><input type="checkbox" name="superres"/> 超分 N1</label>
+<label><input type="checkbox" name="stabilize" id="stabilize"/> 稳像 N3</label>
+<label><input type="checkbox" name="lowlight" id="lowlight"/> 低光 Zero-DCE</label>
+<label><input type="checkbox" name="denoise" id="denoise"/> 去噪 N2</label>
+<label><input type="checkbox" name="deblur" id="deblur"/> 去糊 N2</label>
+<label><input type="checkbox" name="superres" id="superres"/> 超分 Real-ESRGAN</label>
 </div>
 <label>超分倍率
 <select name="scale"><option value="2">2x</option><option value="4">4x</option></select>
@@ -90,6 +94,7 @@ const dl=document.getElementById('dl');
 const statusEl=document.getElementById('status');
 const prog=document.getElementById('prog');
 const workerEl=document.getElementById('worker');
+const pathsEl=document.getElementById('paths');
 const btnPause=document.getElementById('btnPause');
 const btnResume=document.getElementById('btnResume');
 const btnCancel=document.getElementById('btnCancel');
@@ -97,6 +102,17 @@ const btnRestart=document.getElementById('btnRestart');
 const BOOLS=['face','plate','text','enhance','stabilize','lowlight','denoise','deblur','superres'];
 let currentId=null;
 let polling=false;
+
+function renderPaths(pr){
+  if(!pr || typeof pr!=='object'){ pathsEl.textContent='enhance_path: （无）'; return; }
+  const keys=Object.keys(pr);
+  if(!keys.length){ pathsEl.textContent='enhance_path: （未启用）'; return; }
+  pathsEl.innerHTML='enhance_path: '+keys.map(k=>{
+    const v=String(pr[k]);
+    const ok=v.startsWith('official');
+    return '<span class="tag '+(ok?'ok':'warn')+'">'+k+': '+v+'</span>';
+  }).join(' ');
+}
 
 async function refreshWorker(){
   try{
@@ -107,6 +123,7 @@ async function refreshWorker(){
       gpuBits.push(Math.round(g.memory_used_mb)+'/'+Math.round(g.memory_total_mb)+'MB');
     }
     workerEl.textContent='worker: '+(w.liveness||'?')
+      +' · conc '+(w.concurrency||1)
       +' · slot '+(w.slot_free?'free':'busy')
       +' · active '+(w.active_jobs||0)+' queued '+(w.queued_jobs||0)
       +' · '+gpuBits.join(' · ')
@@ -138,6 +155,7 @@ async function postAction(action){
     const r=await fetch('/api/jobs/'+currentId+'/'+action,{method:'POST'});
     const j=await r.json();
     log.textContent=JSON.stringify(j,null,2);
+    if(j.enhance_paths) renderPaths(j.enhance_paths);
     if(j.job_id && action==='restart'){
       currentId=j.job_id;
       dl.style.display='none';
@@ -164,6 +182,7 @@ const poll=async()=>{
     const label=(s.stage||s.status||'')+(s.message?(' · '+s.message):'');
     setProgress(s.progress||0, label);
     log.textContent=JSON.stringify(s,null,2);
+    if(s.enhance_paths) renderPaths(s.enhance_paths);
     updateButtons(s);
     if(s.status==='done'){
       setProgress(1,'完成');
@@ -180,7 +199,6 @@ const poll=async()=>{
       refreshWorker();
       return;
     }
-    // paused / queued / running 继续轮询，以便按钮状态与进度刷新
     setTimeout(poll, s.status==='paused' ? 1200 : 800);
   }catch(err){
     log.textContent=String(err);
@@ -195,6 +213,12 @@ document.getElementById('f').onsubmit=async(e)=>{
   BOOLS.forEach(k=>{ if(!fd.has(k)) fd.set(k,'false'); else fd.set(k,'true'); });
   if(['stabilize','lowlight','denoise','deblur','superres'].some(k=>fd.get(k)==='true')){
     fd.set('enhance','true');
+  }
+  const anyRedact=['face','plate','text'].some(k=>fd.get(k)==='true');
+  const anyEnh=fd.get('enhance')==='true';
+  if(!anyRedact && !anyEnh){
+    setProgress(0,'请至少勾选一项打码目标，或启用增强');
+    return;
   }
   setProgress(0,'上传中…');
   log.textContent='正在上传并创建任务…';
@@ -217,7 +241,8 @@ document.getElementById('f').onsubmit=async(e)=>{
   }
   currentId=j.job_id;
   const admit=j.admit||'queued';
-  setProgress(0, (admit==='run'?'立即开跑 ':'已入队 ')+currentId+(j.admit_reason?(' · '+j.admit_reason):''));
+  const modeHint=(!anyRedact && anyEnh)?'〔仅增强〕 ':'';
+  setProgress(0, modeHint+(admit==='run'?'立即开跑 ':'已入队 ')+currentId+(j.admit_reason?(' · '+j.admit_reason):''));
   updateButtons({status:j.status||'queued'});
   refreshWorker();
   poll();
@@ -316,6 +341,7 @@ def _status_payload(st) -> dict:
             "queued_jobs": snap.get("queued_jobs"),
         },
         "has_output": bool(st.output and Path(st.output).exists()),
+        "enhance_paths": getattr(st, "enhance_paths", None) or {},
         "controls": {
             "can_cancel": st.status in (JobStatus.queued, JobStatus.running, JobStatus.paused),
             "can_pause": st.status in (JobStatus.queued, JobStatus.running),
@@ -389,9 +415,9 @@ def _submit_redact_job(
             scale=int(opt.get("scale") or 2),
         )
         opts = RedactOptions(
-            face=bool(opt.get("face", True)),
-            plate=bool(opt.get("plate", True)),
-            text=bool(opt.get("text", True)),
+            face=bool(opt.get("face", False)),
+            plate=bool(opt.get("plate", False)),
+            text=bool(opt.get("text", False)),
             mode=str(opt.get("mode") or "gaussian"),
             enhance=enh,
         )
@@ -400,6 +426,18 @@ def _submit_redact_job(
             if state.cancel_flag.is_set():
                 raise JobCancelled("cancelled")
             queue.heartbeat(state)
+            if isinstance(msg, str) and msg.startswith("enhance_path:"):
+                # "enhance_path: lowlight=..., superres=..."
+                pr = {}
+                body = msg.split(":", 1)[-1].strip()
+                if body and body != "none":
+                    for part in body.split(","):
+                        part = part.strip()
+                        if "=" in part:
+                            k, v = part.split("=", 1)
+                            pr[k.strip()] = v.strip()
+                if pr:
+                    state.enhance_paths = pr
             # 保持 paused 展示
             if state.status != JobStatus.paused:
                 state.progress = max(0.01, min(0.99, float(p)))
@@ -415,6 +453,10 @@ def _submit_redact_job(
         )
         queue.heartbeat(state)
         state.output = result.output
+        state.enhance_paths = dict(result.enhance_paths or {})
+        # 任务一开始加载完也会写 notes；中途把 path 挂到 message 前缀便于 UI
+        if result.enhance_paths:
+            state.enhance_paths = dict(result.enhance_paths)
         note = "; ".join(result.notes) if result.notes else "处理完成"
         state.message = f"{note} · frames={result.frames} det={result.detections_total}"
 
@@ -494,6 +536,15 @@ async def create_job(
             },
             status_code=503,
         )
+    if not (opt["face"] or opt["plate"] or opt["text"] or opt["enhance"]):
+        try:
+            shutil.rmtree(jdir, ignore_errors=True)
+        except Exception:
+            pass
+        return JSONResponse(
+            {"ok": False, "error": "empty_options", "message": "至少启用打码目标之一或增强", "fail_reason": "empty_options"},
+            status_code=400,
+        )
     _save_options(jdir, opt, final_inp.name)
     _submit_redact_job(
         jid, jdir, final_inp, opt, admit=decision, admit_reason=reason
@@ -509,6 +560,8 @@ async def create_job(
         "admit_reason": reason,
         "input": final_inp.name,
         "enhance": opt["enhance"],
+        "enhance_only": bool(opt["enhance"] and not (opt["face"] or opt["plate"] or opt["text"])),
+        "redact": {"face": opt["face"], "plate": opt["plate"], "text": opt["text"]},
         "worker": queue.worker_snapshot(),
     }
 
