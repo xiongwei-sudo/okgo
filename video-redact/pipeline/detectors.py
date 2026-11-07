@@ -288,3 +288,9 @@ class DetectorHub:
                 d.unload()
             except Exception as e:
                 logger.warning("unload %s: %s", d.name, e)
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass

@@ -98,6 +98,19 @@ class EnhancePipeline:
         self._prev_gray = None
         self._transform_acc = np.eye(2, 3, dtype=np.float64)
         self._warned.clear()
+        # drop any torch modules held by backends
+        for attr in ("_realesrgan", "_zero_dce", "_nafnet", "_basicvsr"):
+            if hasattr(self, attr):
+                try:
+                    setattr(self, attr, None)
+                except Exception:
+                    pass
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     def _stabilize_frame(self, frame: np.ndarray) -> np.ndarray:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)

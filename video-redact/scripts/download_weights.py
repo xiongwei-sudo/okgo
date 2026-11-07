@@ -130,14 +130,8 @@ def main() -> int:
     enh = WEIGHTS / "enhance"
     enh.mkdir(exist_ok=True)
     (enh / "README.txt").write_text(
-        "增强权重状态（2026-11-07）\n"
-        "\n"
-        "- RealESRGAN_x4plus.pth、zero_dce.pth：可由下载脚本获取，GPU 上已在使用。\n"
-        "  二进制不进本仓库，以后走 Git LFS。\n"
-        "- NAFNet-SIDD、BasicVSR++：仍【待补】。OpenCV 降级保持生效。\n"
-        "- vidstab：没有大权重文件。稳像使用 OpenCV 光流。\n"
-        "\n"
-        "缺专用权重或推理未接入时，pipeline/enhance.py 记录【待补】并走 OpenCV 降级。\n",
+        "N1 Real-ESRGAN / N2 NAFNet·Zero-DCE++ / N3 vidstab / N4 BasicVSR++ 权重【待补】\n"
+        "缺权重时 pipeline/enhance.py 使用 OpenCV 降级。\n",
         encoding="utf-8",
     )
     print("Done. weights dir:", WEIGHTS)

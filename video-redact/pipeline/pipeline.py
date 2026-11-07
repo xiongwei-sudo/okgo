@@ -15,11 +15,13 @@ from tqdm import tqdm
 from .blur import redact_frame
 from .detectors import DetectorHub
 from .enhance import EnhanceOptions, EnhancePipeline
+from .queue import JobCancelled
 from .track import SimpleTracker
 
 logger = logging.getLogger(__name__)
 
 ProgressCB = Optional[Callable[[float, str], None]]
+ControlCB = Optional[Callable[[], None]]  # 帧间：暂停阻塞 / 取消抛 JobCancelled
 
 
 @dataclass
@@ -84,16 +86,26 @@ def run_redact(
     weights_dir: Path,
     opts: RedactOptions,
     progress: ProgressCB = None,
+    control: ControlCB = None,
 ) -> JobResult:
     input_path = Path(input_path)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     notes: List[str] = []
 
+    def _cp() -> None:
+        if control is not None:
+            control()
+
+    _cp()
     enhance = EnhancePipeline(weights_dir, device=opts.device)
     if opts.enhance.enable:
+        if progress:
+            progress(0.02, "加载增强模型")
+        _cp()
         enhance.load_for(opts.enhance)
         notes.extend(opts.enhance.notes)
+        _cp()
 
     kinds = []
     if opts.face:
@@ -105,8 +117,12 @@ def run_redact(
     if not kinds:
         raise ValueError("至少启用 face/plate/text 之一")
 
+    if progress:
+        progress(0.03, "加载检测模型")
+    _cp()
     hub = DetectorHub(weights_dir, device=opts.device)
     detectors = hub.get(kinds)
+    _cp()
     if opts.plate and hub.plate._backend == "heuristic":
         notes.append("车牌权重【待补】，已用启发式降级")
 
@@ -132,37 +148,47 @@ def run_redact(
     last_boxes = []
 
     pbar = tqdm(total=total if total > 0 else None, desc="redact", unit="f")
+    cancelled = False
     try:
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            frame = enhance.process_frame(frame, opts.enhance)
+        try:
+            while True:
+                if control is not None:
+                    control()  # 帧间安全点：暂停阻塞 / 取消抛出
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                frame = enhance.process_frame(frame, opts.enhance)
 
-            if opts.stride <= 1 or frame_idx % opts.stride == 0:
-                boxes = []
-                for det in detectors:
-                    for box, label, score in det.detect(frame):
-                        boxes.append(box)
-                        det_count += 1
-                tracked = tracker.update(boxes)
-                last_boxes = tracked
-            else:
-                # 非检测帧：沿用跟踪预测（简易：上一框）
-                last_boxes = tracker.update([])
+                if opts.stride <= 1 or frame_idx % opts.stride == 0:
+                    boxes = []
+                    for det in detectors:
+                        for box, label, score in det.detect(frame):
+                            boxes.append(box)
+                            det_count += 1
+                    tracked = tracker.update(boxes)
+                    last_boxes = tracked
+                else:
+                    # 非检测帧：沿用跟踪预测（简易：上一框）
+                    last_boxes = tracker.update([])
 
-            out = redact_frame(
-                frame,
-                [(int(a), int(b), int(c), int(d)) for a, b, c, d in last_boxes],
-                mode=opts.mode,  # type: ignore[arg-type]
-                strength=opts.strength,
-                margin=opts.margin,
-            )
-            writer.write(out)
-            frame_idx += 1
-            pbar.update(1)
-            if progress and total > 0:
-                progress(frame_idx / total, f"frame {frame_idx}/{total}")
+                out = redact_frame(
+                    frame,
+                    [(int(a), int(b), int(c), int(d)) for a, b, c, d in last_boxes],
+                    mode=opts.mode,  # type: ignore[arg-type]
+                    strength=opts.strength,
+                    margin=opts.margin,
+                )
+                writer.write(out)
+                frame_idx += 1
+                pbar.update(1)
+                if progress and total > 0:
+                    progress(frame_idx / total, f"frame {frame_idx}/{total}")
+                if control is not None:
+                    control()
+        except JobCancelled:
+            cancelled = True
+            notes.append("任务已取消")
+            raise
     finally:
         pbar.close()
         cap.release()
@@ -170,6 +196,8 @@ def run_redact(
         if opts.unload_after:
             hub.unload_all()
             enhance.unload()
+        if cancelled:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     if opts.keep_audio:
         muxed = _mux_audio(input_path, silent_path, output_path)
